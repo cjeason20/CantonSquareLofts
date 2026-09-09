@@ -140,10 +140,13 @@ async function sendRentalRequestEmail(env, input) {
 // commit a real phone number to this repo). Deliberately just an alert,
 // not the full booking details — check email for those.
 async function sendBookingSmsAlert(env) {
-  if (!env.TO_SMS_EMAIL || !env.RESEND_API_KEY) return;
+  if (!env.TO_SMS_EMAIL || !env.RESEND_API_KEY) {
+    console.log("sendBookingSmsAlert: skipped, TO_SMS_EMAIL or RESEND_API_KEY not set");
+    return;
+  }
 
   try {
-    await fetch(RESEND_API_URL, {
+    const res = await fetch(RESEND_API_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -156,8 +159,10 @@ async function sendBookingSmsAlert(env) {
         text: "Canton Square Lofts: new booking inquiry submitted on the website. Check email for details.",
       }),
     });
-  } catch {
-    // SMS gateway hiccups shouldn't affect the booking flow
+    const body = await res.text();
+    console.log(`sendBookingSmsAlert: Resend responded ${res.status}: ${body}`);
+  } catch (err) {
+    console.error("sendBookingSmsAlert: fetch threw", err);
   }
 }
 
@@ -231,6 +236,7 @@ async function handleChat(request, env, ctx) {
 
     if (toolUse && toolUse.name === "submit_rental_request") {
       const result = await sendRentalRequestEmail(env, toolUse.input || {});
+      console.log(`Booking email result: ok=${result.ok}${result.error ? ` error=${result.error}` : ""}`);
       if (result.ok) {
         ctx.waitUntil(sendBookingSmsAlert(env));
       }
