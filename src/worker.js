@@ -3,10 +3,40 @@ import { WIDGET_SCRIPT } from "./widget.js";
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
+const RESEND_API_URL = "https://api.resend.com/emails";
 const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
+const DEFAULT_FROM_EMAIL = "Canton Square Lofts Chatbot <onboarding@resend.dev>";
+const DEFAULT_TO_EMAIL = "info@cantonsquarelofts.com";
 const MAX_MESSAGE_LENGTH = 1000;
 const MAX_HISTORY_TURNS = 8; // user+assistant pairs kept for context
 const MAX_OUTPUT_TOKENS = 500;
+const MAX_FIELD_LENGTH = 300;
+
+const TOOLS = [
+  {
+    name: "submit_rental_request",
+    description:
+      "Submit a completed booking/rental request from the guest to the Canton Square Lofts team for follow-up. Only call this once you have collected all required fields from the guest.",
+    input_schema: {
+      type: "object",
+      properties: {
+        full_name: { type: "string", description: "Guest's full name" },
+        phone: { type: "string", description: "Guest's phone number" },
+        email: { type: "string", description: "Guest's email address" },
+        check_in_date: { type: "string", description: "Requested check-in date, as stated by the guest" },
+        check_out_date: { type: "string", description: "Requested check-out date, as stated by the guest" },
+        rental_type: {
+          type: "string",
+          description:
+            "Which loft (e.g. 'Mississippi Blues Loft'), 'Lounge 1900 event space', or 'not sure yet'",
+        },
+        num_guests: { type: "string", description: "Number of guests" },
+        notes: { type: "string", description: "Any other relevant details the guest mentioned" },
+      },
+      required: ["full_name", "phone", "email", "check_in_date", "check_out_date", "rental_type", "num_guests"],
+    },
+  },
+];
 
 function corsHeaders(env, request) {
   const allowedOrigins = (env.ALLOWED_ORIGIN || "")
@@ -45,6 +75,84 @@ function sanitizeHistory(history) {
   return turns.map((m) => ({ role: m.role, content: m.content }));
 }
 
+function field(value) {
+  if (typeof value !== "string" || !value.trim()) return "Not provided";
+  return value.trim().slice(0, MAX_FIELD_LENGTH);
+}
+
+async function sendRentalRequestEmail(env, input) {
+  if (!env.RESEND_API_KEY) {
+    return { ok: false, error: "Email delivery isn't configured yet — please contact the property directly." };
+  }
+
+  const data = {
+    full_name: field(input.full_name),
+    phone: field(input.phone),
+    email: field(input.email),
+    check_in_date: field(input.check_in_date),
+    check_out_date: field(input.check_out_date),
+    rental_type: field(input.rental_type),
+    num_guests: field(input.num_guests),
+    notes: field(input.notes),
+  };
+
+  const text = [
+    `New booking request from the website chatbot:`,
+    ``,
+    `Name: ${data.full_name}`,
+    `Phone: ${data.phone}`,
+    `Email: ${data.email}`,
+    `Check-in: ${data.check_in_date}`,
+    `Check-out: ${data.check_out_date}`,
+    `Rental type: ${data.rental_type}`,
+    `Guests: ${data.num_guests}`,
+    `Notes: ${data.notes}`,
+  ].join("\n");
+
+  let res;
+  try {
+    res = await fetch(RESEND_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+      },
+      body: JSON.stringify({
+        from: env.FROM_EMAIL || DEFAULT_FROM_EMAIL,
+        to: [env.TO_EMAIL || DEFAULT_TO_EMAIL],
+        subject: `New rental request: ${data.full_name} (${data.rental_type})`,
+        text,
+      }),
+    });
+  } catch {
+    return { ok: false, error: "Couldn't reach the email service." };
+  }
+
+  if (!res.ok) {
+    return { ok: false, error: `Email service returned an error (status ${res.status}).` };
+  }
+
+  return { ok: true };
+}
+
+async function callAnthropic(env, messages) {
+  return fetch(ANTHROPIC_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": env.ANTHROPIC_API_KEY,
+      "anthropic-version": ANTHROPIC_VERSION,
+    },
+    body: JSON.stringify({
+      model: env.MODEL || DEFAULT_MODEL,
+      max_tokens: MAX_OUTPUT_TOKENS,
+      system: SYSTEM_PROMPT,
+      tools: TOOLS,
+      messages,
+    }),
+  });
+}
+
 async function handleChat(request, env) {
   const headers = corsHeaders(env, request);
 
@@ -75,20 +183,7 @@ async function handleChat(request, env) {
 
   let anthropicRes;
   try {
-    anthropicRes = await fetch(ANTHROPIC_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": env.ANTHROPIC_API_KEY,
-        "anthropic-version": ANTHROPIC_VERSION,
-      },
-      body: JSON.stringify({
-        model: env.MODEL || DEFAULT_MODEL,
-        max_tokens: MAX_OUTPUT_TOKENS,
-        system: SYSTEM_PROMPT,
-        messages,
-      }),
-    });
+    anthropicRes = await callAnthropic(env, messages);
   } catch {
     return jsonResponse({ error: "Couldn't reach the chatbot service. Please try again." }, 502, headers);
   }
@@ -101,7 +196,49 @@ async function handleChat(request, env) {
     );
   }
 
-  const data = await anthropicRes.json();
+  let data = await anthropicRes.json();
+
+  // If Claude wants to submit a rental request, execute it and let Claude
+  // produce the final visitor-facing confirmation in a follow-up turn.
+  if (data.stop_reason === "tool_use") {
+    const toolUse = data.content?.find((block) => block.type === "tool_use");
+
+    if (toolUse && toolUse.name === "submit_rental_request") {
+      const result = await sendRentalRequestEmail(env, toolUse.input || {});
+
+      messages.push({ role: "assistant", content: data.content });
+      messages.push({
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: toolUse.id,
+            content: result.ok
+              ? "Request sent to the Canton Square Lofts team."
+              : `Failed to send: ${result.error}`,
+            is_error: !result.ok,
+          },
+        ],
+      });
+
+      try {
+        anthropicRes = await callAnthropic(env, messages);
+      } catch {
+        return jsonResponse({ error: "Couldn't reach the chatbot service. Please try again." }, 502, headers);
+      }
+
+      if (!anthropicRes.ok) {
+        return jsonResponse(
+          { error: "The chatbot service returned an error. Please try again shortly." },
+          502,
+          headers
+        );
+      }
+
+      data = await anthropicRes.json();
+    }
+  }
+
   const reply = data.content?.find((block) => block.type === "text")?.text?.trim();
 
   if (!reply) {

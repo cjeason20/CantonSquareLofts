@@ -7,6 +7,12 @@ compatibility_date = "2024-11-01"
 [vars]
 ALLOWED_ORIGIN = "https://www.cantonsquarelofts.com,https://cantonsquarelofts.com"
 MODEL = "claude-haiku-4-5-20251001"
+TO_EMAIL = "info@cantonsquarelofts.com"
+# Must be a verified sender in your email provider (see README). The Resend
+# sandbox address below only delivers to your own Resend account email —
+# replace it once you've verified a domain.
+FROM_EMAIL = "Canton Square Lofts Chatbot <onboarding@resend.dev>"
 
-# Secret (never put this here) — set with:
+# Secrets (never put these here) — set with:
 #   npx wrangler secret put ANTHROPIC_API_KEY
+#   npx wrangler secret put RESEND_API_KEY
