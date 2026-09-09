@@ -135,6 +135,32 @@ async function sendRentalRequestEmail(env, input) {
   return { ok: true };
 }
 
+// Best-effort SMS notification via an email-to-SMS carrier gateway (e.g.
+// "6015551234@cspire1.com" in TO_SMS_EMAIL, set as a Worker secret — never
+// commit a real phone number to this repo). Deliberately just an alert,
+// not the full booking details — check email for those.
+async function sendBookingSmsAlert(env) {
+  if (!env.TO_SMS_EMAIL || !env.RESEND_API_KEY) return;
+
+  try {
+    await fetch(RESEND_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+      },
+      body: JSON.stringify({
+        from: env.FROM_EMAIL || DEFAULT_FROM_EMAIL,
+        to: [env.TO_SMS_EMAIL],
+        subject: "",
+        text: "Canton Square Lofts: new booking inquiry submitted on the website. Check email for details.",
+      }),
+    });
+  } catch {
+    // SMS gateway hiccups shouldn't affect the booking flow
+  }
+}
+
 async function callAnthropic(env, messages) {
   return fetch(ANTHROPIC_API_URL, {
     method: "POST",
@@ -153,7 +179,7 @@ async function callAnthropic(env, messages) {
   });
 }
 
-async function handleChat(request, env) {
+async function handleChat(request, env, ctx) {
   const headers = corsHeaders(env, request);
 
   if (!env.ANTHROPIC_API_KEY) {
@@ -205,6 +231,9 @@ async function handleChat(request, env) {
 
     if (toolUse && toolUse.name === "submit_rental_request") {
       const result = await sendRentalRequestEmail(env, toolUse.input || {});
+      if (result.ok) {
+        ctx.waitUntil(sendBookingSmsAlert(env));
+      }
 
       messages.push({ role: "assistant", content: data.content });
       messages.push({
@@ -249,7 +278,7 @@ async function handleChat(request, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (url.pathname === "/widget.js" && request.method === "GET") {
@@ -266,7 +295,7 @@ export default {
         return new Response(null, { status: 204, headers: corsHeaders(env, request) });
       }
       if (request.method === "POST") {
-        return handleChat(request, env);
+        return handleChat(request, env, ctx);
       }
       return new Response("Method Not Allowed", { status: 405 });
     }

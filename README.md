@@ -5,7 +5,7 @@ A chatbot for [cantonsquarelofts.com](https://www.cantonsquarelofts.com/) — fo
 - **Backend**: a Cloudflare Worker (`src/worker.js`) that calls the Anthropic Claude API and keeps your API key secret. It also serves the widget script itself at `/widget.js`.
 - **Widget**: a vanilla JS chat bubble (`src/widget.js`) with no build step or dependencies — safe to drop into Squarespace.
 - **Knowledge base**: `src/faq.js` — property info, rates, and exact Q&A pairs sourced from the property's rental doc. Edit this whenever rates or policies change.
-- **Booking requests**: when a visitor wants to book a loft or Lounge 1900, the bot collects name, phone, email, check-in/check-out dates, rental type, and guest count, then emails a summary to your team via [Resend](https://resend.com).
+- **Booking requests**: when a visitor wants to book a loft or Lounge 1900, the bot collects name, phone, email, check-in/check-out dates, rental type, and guest count, then emails a summary to your team via [Resend](https://resend.com) and, optionally, sends you a short text alert (no details, just "an inquiry came in — check your email").
 
 ## 1. Keep property details current
 
@@ -22,7 +22,21 @@ Create one at [console.anthropic.com](https://console.anthropic.com/) under **AP
 3. Create an API key under **API Keys**.
 4. Once your domain is verified, update `FROM_EMAIL` in `wrangler.toml` to something like `"Canton Square Lofts <bookings@cantonsquarelofts.com>"`.
 
-## 4. Deploy the Worker (Cloudflare)
+## 4. (Optional) Text alerts on new inquiries
+
+The Worker can also fire a short text — "new booking inquiry submitted, check your email" — the moment a booking request comes in, via your phone carrier's email-to-SMS gateway. No new signup needed, it reuses Resend. Set this as a **secret** (never commit a real phone number to this public repo):
+
+```bash
+npx wrangler secret put TO_SMS_EMAIL
+# when prompted, enter: <your10digitnumber>@<carrier-gateway-domain>
+# e.g. 5551234567@vtext.com (Verizon), 5551234567@txt.att.net (AT&T), 5551234567@tmomail.net (T-Mobile)
+```
+
+Carrier gateway domains aren't perfectly standardized and can change — send yourself a test booking inquiry after deploying to confirm it actually arrives before relying on it. If it doesn't, double-check your carrier's current gateway domain (search "<your carrier> email to text gateway").
+
+Leave `TO_SMS_EMAIL` unset to skip texts entirely — the booking email to `TO_EMAIL` still works either way.
+
+## 5. Deploy the Worker (Cloudflare)
 
 You'll need a free [Cloudflare account](https://dash.cloudflare.com/sign-up).
 
@@ -31,6 +45,7 @@ npm install
 npx wrangler login                          # opens a browser to authorize
 npx wrangler secret put ANTHROPIC_API_KEY   # paste your Anthropic key when prompted
 npx wrangler secret put RESEND_API_KEY      # paste your Resend key when prompted
+npx wrangler secret put TO_SMS_EMAIL        # optional, see step 4
 npm run deploy
 ```
 
@@ -47,7 +62,7 @@ npm run dev
 
 This runs the Worker locally so you can test `/api/chat` before deploying.
 
-## 5. Embed the widget on Squarespace
+## 6. Embed the widget on Squarespace
 
 In Squarespace: **Settings → Advanced → Code Injection → Footer**, add:
 
@@ -64,6 +79,7 @@ In Squarespace: **Settings → Advanced → Code Injection → Footer**, add:
 - The widget posts each message plus recent conversation history to `POST /api/chat` on the Worker.
 - The Worker sends it to Claude along with a system prompt built from `src/faq.js`, instructing it to stay on-topic, use the exact wording for known Q&A, and admit when it doesn't know something.
 - When Claude has collected all the fields for a booking request, it calls a `submit_rental_request` tool; the Worker sends that as an email via Resend to `TO_EMAIL`, then lets Claude confirm to the visitor that the request was sent. Staff still need to follow up to confirm actual availability — the bot never promises a confirmed booking.
+- If `TO_SMS_EMAIL` is set, a text alert fires in the background right after the email succeeds — it doesn't delay the reply to the visitor.
 - Conversation history is kept client-side in `sessionStorage` (cleared when the browser tab closes) — nothing is stored server-side beyond the outbound email itself.
 - CORS on `/api/chat` only allows requests from the origins listed in `ALLOWED_ORIGIN`.
 
