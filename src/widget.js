@@ -81,7 +81,7 @@ export const WIDGET_SCRIPT = `(function () {
     '<div class="csl-chat-header"><span>Canton Square Lofts</span>' +
     '<button class="csl-chat-close" aria-label="Close chat">\\u2715</button></div>' +
     '<div class="csl-chat-messages"><div class="csl-chat-welcome">' +
-    "Hi! Ask me about our lofts, rates, amenities, or how to book a stay or event." +
+    "Hi! Ask me about our lofts, rates, amenities, or how to make a reservation." +
     "</div></div>" +
     '<div class="csl-chat-inputrow">' +
     '<input class="csl-chat-input" type="text" placeholder="Type a message..." maxlength="1000" />' +
